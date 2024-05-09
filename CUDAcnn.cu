@@ -175,49 +175,44 @@ static void Layer_feedBack_full(Layer* self){
 /* Layer_feedForw_conv(self)
    Performs feed forward updates.
 */
-static void Layer_feedForw_conv(Layer* self){
-    Layer* lprev = self->lprev;
+__global__ void Layer_feedForw_conv_kernel(double* outputs, double* biases, double* weights, double* prev_outputs, int width, int height, int depth, int prev_width, int prev_height, int prev_depth, int kernsize, int stride, int padding) {
+    int x1 = blockIdx.x * blockDim.x + threadIdx.x;
+    int y1 = blockIdx.y * blockDim.y + threadIdx.y;
+    int z1 = blockIdx.z * blockDim.z + threadIdx.z;
 
-    int kernsize = self->conv.kernsize;
-    int i = 0;
-    for (int z1 = 0; z1 < self->depth; z1++) {
-        /* z1: dst matrix */
-        /* qbase: kernel matrix base index */
-        int qbase = z1 * lprev->depth * kernsize * kernsize;
-        for (int y1 = 0; y1 < self->height; y1++) {
-            int y0 = self->conv.stride * y1 - self->conv.padding;
-            for (int x1 = 0; x1 < self->width; x1++) {
-                int x0 = self->conv.stride * x1 - self->conv.padding;
-                /* Compute the kernel at (x1,y1) */
-                /* (x0,y0): src pixel */
-                double v = self->biases[z1];
-                for (int z0 = 0; z0 < lprev->depth; z0++) {
-                    /* z0: src matrix */
-                    /* pbase: src matrix base index */
-                    int pbase = z0 * lprev->width * lprev->height;
-                    for (int dy = 0; dy < kernsize; dy++) {
-                        int y = y0+dy;
-                        if (0 <= y && y < lprev->height) {
-                            int p = pbase + y*lprev->width;
-                            int q = qbase + dy*kernsize;
-                            for (int dx = 0; dx < kernsize; dx++) {
-                                int x = x0+dx;
-                                if (0 <= x && x < lprev->width) {
-                                    v += lprev->outputs[p+x] * self->weights[q+dx];
-                                }
-                            }
+    if (x1 < width && y1 < height && z1 < depth) {
+        int qbase = z1 * prev_depth * kernsize * kernsize;
+        int y0 = stride * y1 - padding;
+        int x0 = stride * x1 - padding;
+        double v = biases[z1];
+        
+        for (int z0 = 0; z0 < prev_depth; z0++) {
+            int pbase = z0 * prev_width * prev_height;
+            for (int dy = 0; dy < kernsize; dy++) {
+                int y = y0 + dy;
+                if (y >= 0 && y < prev_height) {
+                    int p = pbase + y * prev_width;
+                    int q = qbase + dy * kernsize;
+                    for (int dx = 0; dx < kernsize; dx++) {
+                        int x = x0 + dx;
+                        if (x >= 0 && x < prev_width) {
+                            v += prev_outputs[p + x] * weights[q + dx];
                         }
                     }
                 }
-                /* Apply the activation function. */
-                v = relu(v);
-                self->outputs[i] = v;
-                self->gradients[i] = relu_g(v);
-                i++;
             }
         }
+        outputs[z1 * width * height + y1 * width + x1] = v > 0 ? v : 0;
     }
 }
+
+void Layer_feedForw_conv(Layer* self) {
+    dim3 threadsPerBlock(16, 16, 1); 
+    dim3 numBlocks((self->width + 15) / 16, (self->height + 15) / 16, self->depth);
+
+    Layer_feedForw_conv_kernel<<<numBlocks, threadsPerBlock>>>(self->outputs, self->biases, self->weights, self->lprev->outputs, self->width, self->height, self->depth, self->lprev->width, self->lprev->height, self->lprev->depth, self->conv.kernsize, self->conv.stride, self->conv.padding);
+}
+
 
 static void Layer_feedBack_conv(Layer* self){
     Layer* lprev = self->lprev;
@@ -268,7 +263,6 @@ static void Layer_feedBack_conv(Layer* self){
    Sets the input values.
 */
 void Layer_setInputs(Layer* self, const double* values){
-
     /* Set the values as the outputs. */
     for (int i = 0; i < self->nnodes; i++) 
         self->outputs[i] = values[i];
