@@ -2,7 +2,7 @@
 
 
 RM=rm -f
-CC=cc -O -Wall -Werror
+
 CURL=curl
 GZIP=gzip
 
@@ -16,7 +16,7 @@ MNIST_FILES= \
 	$(DATADIR)/t10k-images-idx3-ubyte \
 	$(DATADIR)/t10k-labels-idx1-ubyte
 
-all: test_mnist
+all: test_serial
 
 clean:
 	-$(RM) ./mnist *.o
@@ -35,12 +35,12 @@ get_mnist:
 	mv data/train-labels.idx1-ubyte data/train-labels-idx1-ubyte
 
 
-test_mnist: ./mnist $(MNIST_FILES)
-	./mnist $(MNIST_FILES)
+test_serial: ./cnn $(MNIST_FILES)
+	./cnn $(MNIST_FILES)
+./cnn: cnn.c
+	gcc -o $@ $^ $(LIBS)
 
-
-./mnist: mnist.c cnn.c
-	$(CC) -o $@ $^ $(LIBS)
-
-mnist.c: cnn.h
-cnn.c: cnn.h
+test_mpi: ./cnnmpi $(MNIST_FILES)
+	mpirun -np 8 ./cnnmpi $(MNIST_FILES)
+./cnnmpi: cnnmpi.c
+	mpicc -o $@ $^ $(LIBS)
