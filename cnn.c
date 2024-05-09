@@ -431,6 +431,7 @@ IdxFile* IdxFile_read(FILE* fp)
         }
         /* Read the data. */
         self->data = (uint8_t*) malloc(nbytes);
+        fread(self->data, sizeof(uint8_t), nbytes, fp);
     }
 
     return self;

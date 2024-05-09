@@ -175,36 +175,95 @@ static void Layer_feedBack_full(Layer* self){
 /* Layer_feedForw_conv(self)
    Performs feed forward updates.
 */
-__global__ void Layer_feedForw_conv_kernel(double* outputs, double* biases, double* weights, double* prev_outputs, int width, int height, int depth, int prev_width, int prev_height, int prev_depth, int kernsize, int stride, int padding) {
-    int x1 = blockIdx.x * blockDim.x + threadIdx.x;
-    int y1 = blockIdx.y * blockDim.y + threadIdx.y;
-    int z1 = blockIdx.z * blockDim.z + threadIdx.z;
+// __global__ 
+// void Layer_feedForw_conv_kernel(double* outputs, double* biases, double* weights, double* prev_outputs, int width, int height, int depth, int prev_width, int prev_height, int prev_depth, int kernsize, int stride, int padding) {
+//     int x1 = blockIdx.x * blockDim.x + threadIdx.x;
+//     int y1 = blockIdx.y * blockDim.y + threadIdx.y;
+//     int z1 = blockIdx.z * blockDim.z + threadIdx.z;
 
-    if (x1 < width && y1 < height && z1 < depth) {
-        int qbase = z1 * prev_depth * kernsize * kernsize;
-        int y0 = stride * y1 - padding;
-        int x0 = stride * x1 - padding;
-        double v = biases[z1];
+//     if (x1 < width && y1 < height && z1 < depth) {
+//         int qbase = z1 * prev_depth * kernsize * kernsize;
+//         int y0 = stride * y1 - padding;
+//         int x0 = stride * x1 - padding;
+//         double v = biases[z1];
         
-        for (int z0 = 0; z0 < prev_depth; z0++) {
-            int pbase = z0 * prev_width * prev_height;
+//         for (int z0 = 0; z0 < prev_depth; z0++) {
+//             int pbase = z0 * prev_width * prev_height;
+//             for (int dy = 0; dy < kernsize; dy++) {
+//                 int y = y0 + dy;
+//                 if (y >= 0 && y < prev_height) {
+//                     int p = pbase + y * prev_width;
+//                     int q = qbase + dy * kernsize;
+//                     for (int dx = 0; dx < kernsize; dx++) {
+//                         int x = x0 + dx;
+//                         if (x >= 0 && x < prev_width) {
+//                             v += prev_outputs[p + x] * weights[q + dx];
+//                         }
+//                     }
+//                 }
+//             }
+//         }
+//         outputs[z1 * width * height + y1 * width + x1] = v > 0 ? v : 0;
+//     }
+// }
+
+__device__ double relu(double x) {
+    return x > 0 ? x : 0;
+}
+
+__device__ double relu_g(double x) {
+    return x > 0 ? 1 : 0;
+}
+
+__global__ void Layer_feedForw_conv_kernel(Layer* self, Layer* lprev) {
+    int kernsize = self->conv.kernsize;
+    int i = threadIdx.x + blockIdx.x * blockDim.x;
+    int z1 = blockIdx.y;
+    
+    if (i < self->width * self->height) {
+        int x1 = i % self->width;
+        int y1 = i / self->width;
+        int qbase = z1 * lprev->depth * kernsize * kernsize;
+
+        int x0 = self->conv.stride * x1 - self->conv.padding;
+        int y0 = self->conv.stride * y1 - self->conv.padding;
+
+        double v = self->biases[z1];
+
+        for (int z0 = 0; z0 < lprev->depth; z0++) {
+            int pbase = z0 * lprev->width * lprev->height;
             for (int dy = 0; dy < kernsize; dy++) {
                 int y = y0 + dy;
-                if (y >= 0 && y < prev_height) {
-                    int p = pbase + y * prev_width;
+                if (0 <= y && y < lprev->height) {
+                    int p = pbase + y * lprev->width;
                     int q = qbase + dy * kernsize;
                     for (int dx = 0; dx < kernsize; dx++) {
                         int x = x0 + dx;
-                        if (x >= 0 && x < prev_width) {
-                            v += prev_outputs[p + x] * weights[q + dx];
+                        if (0 <= x && x < lprev->width) {
+                            v += lprev->outputs[p + x] * self->weights[q + dx];
                         }
                     }
                 }
             }
         }
-        outputs[z1 * width * height + y1 * width + x1] = v > 0 ? v : 0;
+        
+        // Apply the activation function
+        v = relu(v);
+        self->outputs[i] = v;
+        self->gradients[i] = relu_g(v);
     }
 }
+
+void Layer_feedForw_conv(Layer* self) {
+    Layer* lprev = self->lprev;
+
+    dim3 threadsPerBlock(256);
+    dim3 numBlocks((self->width * self->height + threadsPerBlock.x - 1) / threadsPerBlock.x, self->depth);
+
+    Layer_feedForw_conv_kernel<<<numBlocks, threadsPerBlock>>>(self, lprev);
+    cudaDeviceSynchronize();
+}
+
 
 void Layer_feedForw_conv(Layer* self) {
     dim3 threadsPerBlock(16, 16, 1); 
