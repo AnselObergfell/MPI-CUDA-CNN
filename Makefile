@@ -44,3 +44,8 @@ test_mpi: ./cnnmpi $(MNIST_FILES)
 	mpirun -np 8 ./cnnmpi $(MNIST_FILES)
 ./cnnmpi: cnnmpi.c
 	mpicc -o $@ $^ $(LIBS)
+
+test_cuda: ./CUDAcnn $(MNIST_FILES)
+	./CUDAcnn $(MNIST_FILES)
+./CUDAcnn: CUDAcnn.cu
+	nvcc -o $@ $^ $(LIBS)

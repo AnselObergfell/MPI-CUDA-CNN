@@ -120,15 +120,11 @@ void Layer_destroy(Layer* self){
 }
 
 
-/* Layer_feedForw_full(self)
-   Performs feed forward updates.
-*/
 static void Layer_feedForw_full(Layer* self){
     Layer* lprev = self->lprev;
 
     int k = 0;
     for (int i = 0; i < self->nnodes; i++) {
-        /* Compute Y = (W * X + B) without activation function. */
         double x = self->biases[i];
         for (int j = 0; j < lprev->nnodes; j++) {
             x += (lprev->outputs[j] * self->weights[k++]);
@@ -137,7 +133,6 @@ static void Layer_feedForw_full(Layer* self){
     }
 
     if (self->lnext == NULL) {
-        /* Last layer - use Softmax. */
         double m = -1;
         for (int i = 0; i < self->nnodes; i++) {
             double x = self->outputs[i];
@@ -152,7 +147,6 @@ static void Layer_feedForw_full(Layer* self){
         }
         for (int i = 0; i < self->nnodes; i++) {
             self->outputs[i] /= t;
-            /* This isn't right, but set the same value to all the gradients. */
             self->gradients[i] = 1;
         }
     } else {
@@ -167,16 +161,12 @@ static void Layer_feedForw_full(Layer* self){
 
 static void Layer_feedBack_full(Layer* self){
     Layer* lprev = self->lprev;
-
-    /* Clear errors. */
     for (int j = 0; j < lprev->nnodes; j++) lprev->errors[j] = 0;
     
     int k = 0;
     for (int i = 0; i < self->nnodes; i++) {
-        /* Computer the weight/bias updates. */
         double dnet = self->errors[i] * self->gradients[i];
         for (int j = 0; j < lprev->nnodes; j++) {
-            /* Propagate the errors to the previous layer. */
             lprev->errors[j] += self->weights[k] * dnet;
             self->u_weights[k] += dnet * lprev->outputs[j];
             k++;
@@ -186,29 +176,18 @@ static void Layer_feedBack_full(Layer* self){
 
 }
 
-/* Layer_feedForw_conv(self)
-   Performs feed forward updates.
-*/
 static void Layer_feedForw_conv(Layer* self){
-
     Layer* lprev = self->lprev;
-
     int kernsize = self->conv.kernsize;
     int i = 0;
     for (int z1 = 0; z1 < self->depth; z1++) {
-        /* z1: dst matrix */
-        /* qbase: kernel matrix base index */
         int qbase = z1 * lprev->depth * kernsize * kernsize;
         for (int y1 = 0; y1 < self->height; y1++) {
             int y0 = self->conv.stride * y1 - self->conv.padding;
             for (int x1 = 0; x1 < self->width; x1++) {
                 int x0 = self->conv.stride * x1 - self->conv.padding;
-                /* Compute the kernel at (x1,y1) */
-                /* (x0,y0): src pixel */
                 double v = self->biases[z1];
                 for (int z0 = 0; z0 < lprev->depth; z0++) {
-                    /* z0: src matrix */
-                    /* pbase: src matrix base index */
                     int pbase = z0 * lprev->width * lprev->height;
                     for (int dy = 0; dy < kernsize; dy++) {
                         int y = y0+dy;
@@ -224,7 +203,6 @@ static void Layer_feedForw_conv(Layer* self){
                         }
                     }
                 }
-                /* Apply the activation function. */
                 v = relu(v);
                 self->outputs[i] = v;
                 self->gradients[i] = relu_g(v);
@@ -236,26 +214,18 @@ static void Layer_feedForw_conv(Layer* self){
 
 static void Layer_feedBack_conv(Layer* self){
     Layer* lprev = self->lprev;
-
-    /* Clear errors. */
     for (int j = 0; j < lprev->nnodes; j++) {lprev->errors[j] = 0;}
 
     int kernsize = self->conv.kernsize;
     int i = 0;
     for (int z1 = 0; z1 < self->depth; z1++) {
-        /* z1: dst matrix */
-        /* qbase: kernel matrix base index */
         int qbase = z1 * lprev->depth * kernsize * kernsize;
         for (int y1 = 0; y1 < self->height; y1++) {
             int y0 = self->conv.stride * y1 - self->conv.padding;
             for (int x1 = 0; x1 < self->width; x1++) {
                 int x0 = self->conv.stride * x1 - self->conv.padding;
-                /* Compute the kernel at (x1,y1) */
-                /* (x0,y0): src pixel */
                 double dnet = self->errors[i] * self->gradients[i];
                 for (int z0 = 0; z0 < lprev->depth; z0++) {
-                    /* z0: src matrix */
-                    /* pbase: src matrix base index */
                     int pbase = z0 * lprev->width * lprev->height;
                     for (int dy = 0; dy < kernsize; dy++) {
                         int y = y0+dy;
@@ -279,16 +249,11 @@ static void Layer_feedBack_conv(Layer* self){
     }
 }
 
-/* Layer_setInputs(self, values)
-   Sets the input values.
-*/
 void Layer_setInputs(Layer* self, const double* values){
 
-    /* Set the values as the outputs. */
     for (int i = 0; i < self->nnodes; i++) 
         self->outputs[i] = values[i];
 
-    /* Start feed forwarding. */
     Layer* layer = self->lnext;
     while (layer != NULL) {
         switch (layer->ltype) {
@@ -305,17 +270,12 @@ void Layer_setInputs(Layer* self, const double* values){
     }
 }
 
-/* Layer_getOutputs(self, outputs)
-   Gets the output values.
-*/
 void Layer_getOutputs(const Layer* self, double* outputs){
     for (int i = 0; i < self->nnodes; i++) 
         outputs[i] = self->outputs[i];
 }
 
-/* Layer_getErrorTotal(self)
-   Gets the error total.
-*/
+
 double Layer_getErrorTotal(const Layer* self){
     double total = 0;
     for (int i = 0; i < self->nnodes; i++) {
@@ -325,14 +285,11 @@ double Layer_getErrorTotal(const Layer* self){
     return (total / self->nnodes);
 }
 
-/* Layer_learnOutputs(self, values)
-   Learns the output values.
-*/
+
 void Layer_learnOutputs(Layer* self, const double* values){
     for (int i = 0; i < self->nnodes; i++) 
         self->errors[i] = (self->outputs[i] - values[i]);
     
-    /* Start backpropagation. */
     Layer* layer = self;
     while (layer != NULL) {
         switch (layer->ltype) {
@@ -349,9 +306,7 @@ void Layer_learnOutputs(Layer* self, const double* values){
     }
 }
 
-/* Layer_update(self, rate)
-   Updates the weights.
-*/
+
 void Layer_update(Layer* self, double rate){
     for (int i = 0; i < self->nbiases; i++){
         self->biases[i] -= rate * self->u_biases[i];
@@ -363,14 +318,8 @@ void Layer_update(Layer* self, double rate){
         Layer_update(self->lprev, rate);
 }
 
-/* Layer_create_input(depth, width, height)
-   Creates an input Layer with size (depth x weight x height).
-*/
 Layer* Layer_create_input(int depth, int width, int height){return Layer_create(NULL, LAYER_INPUT, depth, width, height, 0, 0);}
 
-/* Layer_create_full(lprev, nnodes, std)
-   Creates a fully-connected Layer.
-*/
 Layer* Layer_create_full(Layer* lprev, int nnodes, double std){
     Layer* self = Layer_create(
         lprev, LAYER_FULL, nnodes, 1, 1,
@@ -402,24 +351,21 @@ typedef struct _IdxFile{
     uint8_t* data;
 } IdxFile;
 
-/* IdxFile_read(fp)
-   Reads all the data from given fp.
-*/
+
 IdxFile* IdxFile_read(FILE* fp)
 {
-    /* Read the file header. */
+
     struct {
         uint16_t magic;
         uint8_t type;
         uint8_t ndims;
-        /* big endian */
+
     } header;
     if (fread(&header, sizeof(header), 1, fp) != 1) return NULL;
     if (header.magic != 0) return NULL;
     if (header.type != 0x08) return NULL;
     if (header.ndims < 1) return NULL;
 
-    /* Read the dimensions. */
     IdxFile* self = (IdxFile*)calloc(1, sizeof(IdxFile));
     if (self == NULL) return NULL;
     self->ndims = header.ndims;
@@ -429,21 +375,16 @@ IdxFile* IdxFile_read(FILE* fp)
     if (fread(self->dims, sizeof(uint32_t), self->ndims, fp) == self->ndims) {
         uint32_t nbytes = sizeof(uint8_t);
         for (int i = 0; i < self->ndims; i++) {
-            /* Fix the byte order. */
             uint32_t size = be32toh(self->dims[i]);
             nbytes *= size;
             self->dims[i] = size;
         }
-        /* Read the data. */
         self->data = (uint8_t*) malloc(nbytes);
     }
 
     return self;
 }
 
-/* IdxFile_destroy(self)
-   Release the memory.
-*/
 void IdxFile_destroy(IdxFile* self){
     if (self->dims != NULL) {
         free(self->dims);
@@ -456,16 +397,11 @@ void IdxFile_destroy(IdxFile* self){
     free(self);
 }
 
-/* IdxFile_get1(self, i)
-   Get the i-th record of the Idx1 file. (uint8_t)
- */
 uint8_t IdxFile_get1(IdxFile* self, int i){
     return self->data[i];
 }
 
-/* IdxFile_get3(self, i, out)
-   Get the i-th record of the Idx3 file. (matrix of uint8_t)
- */
+
 void IdxFile_get3(IdxFile* self, int i, uint8_t* out){
     size_t n = self->dims[1] * self->dims[2];
     memcpy(out, &self->data[i*n], n);

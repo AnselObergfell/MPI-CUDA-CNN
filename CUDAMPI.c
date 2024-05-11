@@ -4,43 +4,19 @@
 #include <stdint.h>
 #include <endian.h>
 #include <string.h>
+#include <mpi.h>
+#include "CUDAMPI.h"
 
-typedef enum _LayerType {
-    LAYER_INPUT = 0,
-    LAYER_FULL,
-    LAYER_CONV
-} LayerType;
+Layer* Layer_create_input(
+    int depth, int width, int height);
 
+Layer* Layer_create_full(
+    Layer* lprev, int nnodes, double std);
 
-typedef struct Layer {
+Layer* Layer_create_conv(
+    Layer* lprev, int depth, int width, int height,
+    int kernsize, int padding, int stride, double std);
 
-    int lid;                    /* Layer ID */
-    struct Layer* lprev;       /* Previous layer pointer */
-    struct Layer* lnext;       /* Next layer pointer */
-    int depth, width, height;   /* Shape */
-    int nnodes;                 /* Number of nodes */
-    double* outputs;            /* Output values of nodes */
-    double* gradients;          /* Gradients for backpropagation */
-    double* errors;             /* Computed errors for training */
-    int nbiases;                /* Number of biases */
-    double* biases;             /* Bias values */
-    double* u_biases;           /* Updates to biases from training */
-    int nweights;               /* Number of weights */
-    double* weights;            /* Weight values */
-    double* u_weights;          /* Updates to weights from training */
-
-    LayerType ltype;            /* Layer type */
-    union {
-        struct {
-        } full;
-        struct {
-            int kernsize;       /* kernel size (>0) */
-            int padding;        /* padding size */
-            int stride;         /* stride (>0) */
-        } conv;
-    };
-
-} Layer;
 
 /* rnd(): uniform random [0.0, 1.0] */
 static inline double rnd(){return ((double)rand() / RAND_MAX);}
@@ -94,6 +70,7 @@ static Layer* Layer_create(
 }
 
 void Layer_destroy(Layer* self){
+
     free(self->outputs);
     free(self->gradients);
     free(self->errors);
@@ -106,20 +83,20 @@ void Layer_destroy(Layer* self){
     free(self);
 }
 
+
 static void Layer_feedForw_full(Layer* self){
     Layer* lprev = self->lprev;
 
     int k = 0;
     for (int i = 0; i < self->nnodes; i++) {
-
         double x = self->biases[i];
-        for (int j = 0; j < lprev->nnodes; j++)
+        for (int j = 0; j < lprev->nnodes; j++) {
             x += (lprev->outputs[j] * self->weights[k++]);
+        }
         self->outputs[i] = x;
     }
 
     if (self->lnext == NULL) {
-
         double m = -1;
         for (int i = 0; i < self->nnodes; i++) {
             double x = self->outputs[i];
@@ -164,62 +141,11 @@ static void Layer_feedBack_full(Layer* self){
 
 }
 
-__global__ void conv_forward_kernel(double* input, double* output, double* weights, double* biases,
-                                    int inputWidth, int inputHeight, int inputDepth,
-                                    int outputWidth, int outputHeight, int outputDepth,
-                                    int kernelSize, int padding, int stride) {
-    int tx = threadIdx.x + blockIdx.x * blockDim.x;
-    int ty = threadIdx.y + blockIdx.y * blockDim.y;
-    int tz = threadIdx.z + blockIdx.z * blockDim.z;
-
-    if (tx < outputWidth && ty < outputHeight && tz < outputDepth) {
-        double value = 0.0;
-        int from_x = tx * stride - padding;
-        int from_y = ty * stride - padding;
-        for (int i = 0; i < kernelSize; ++i) {
-            for (int j = 0; j < kernelSize; ++j) {
-                for (int k = 0; k < inputDepth; ++k) {
-                    int ix = from_x + i;
-                    int iy = from_y + j;
-                    if (ix >= 0 && ix < inputWidth && iy >= 0 && iy < inputHeight) {
-                        int input_idx = (k * inputHeight + iy) * inputWidth + ix;
-                        int weight_idx = ((tz * inputDepth + k) * kernelSize + j) * kernelSize + i;
-                        value += input[input_idx] * weights[weight_idx];
-                    }
-                }
-            }
-        }
-        int bias_idx = tz;
-        output[(tz * outputHeight + ty) * outputWidth + tx] = value + biases[bias_idx];
-    }
-}
-
-
-void forward_convolution_layer(Layer* layer) {
-    double* d_output;
-    cudaMalloc(&d_output, sizeof(double) * layer->depth * layer->width * layer->height);
-    double* d_weights;
-    double* d_biases;
-    cudaMalloc(&d_weights, sizeof(double) * layer->nweights);
-    cudaMalloc(&d_biases, sizeof(double) * layer->nbiases);
-    cudaMemcpy(d_weights, layer->weights, sizeof(double) * layer->nweights, cudaMemcpyHostToDevice);
-    cudaMemcpy(d_biases, layer->biases, sizeof(double) * layer->nbiases, cudaMemcpyHostToDevice);
-    dim3 blockDim(16, 16, 1);
-    dim3 gridDim((layer->width  + 15) / 16, (layer->height + 15) / 16, layer->depth);
-    conv_forward_kernel<<<gridDim, blockDim>>>(layer->lprev->output, d_output, d_weights, d_biases,
-                                               layer->prev->width, layer->prev->height, layer->prev->depth,
-                                               layer->width, layer->height, layer->depth,
-                                               layer->conv.kernsize, layer->conv.padding, layer->conv.stride);
-
-    cudaMemcpy(layer->outputs, d_output, sizeof(double) * layer->depth * layer->width * layer->height, cudaMemcpyDeviceToHost);
-    cudaFree(d_output);
-    cudaFree(d_weights);
-    cudaFree(d_biases);
-}
-
 static void Layer_feedBack_conv(Layer* self){
     Layer* lprev = self->lprev;
-    for (int j = 0; j < lprev->nnodes; j++) lprev->errors[j] = 0;
+
+
+    for (int j = 0; j < lprev->nnodes; j++) {lprev->errors[j] = 0;}
 
     int kernsize = self->conv.kernsize;
     int i = 0;
@@ -255,29 +181,30 @@ static void Layer_feedBack_conv(Layer* self){
 }
 
 void Layer_setInputs(Layer* self, const double* values){
+
     for (int i = 0; i < self->nnodes; i++) 
         self->outputs[i] = values[i];
-    
+
     Layer* layer = self->lnext;
     while (layer != NULL) {
         switch (layer->ltype) {
-        case LAYER_FULL:
-            Layer_feedForw_full(layer);
-            break;
-        case LAYER_CONV:
-            Layer_feedForw_conv(layer);
-            break;
-        default:
-            break;
+            case LAYER_FULL:
+                Layer_feedForw_full(layer);
+                break;
+            case LAYER_CONV:
+                Layer_feedForw_conv(layer);
+                break;
+            default:
+                break;
         }
         layer = layer->lnext;
     }
 }
-
 void Layer_getOutputs(const Layer* self, double* outputs){
     for (int i = 0; i < self->nnodes; i++) 
         outputs[i] = self->outputs[i];
 }
+
 
 double Layer_getErrorTotal(const Layer* self){
     double total = 0;
@@ -309,14 +236,12 @@ void Layer_learnOutputs(Layer* self, const double* values){
 }
 
 void Layer_update(Layer* self, double rate){
-    for (int i = 0; i < self->nbiases; i++) {
+    for (int i = 0; i < self->nbiases; i++){
         self->biases[i] -= rate * self->u_biases[i];
-        self->u_biases[i] = 0;
-    }
-    for (int i = 0; i < self->nweights; i++) {
+        self->u_biases[i] = 0;}
+    for (int i = 0; i < self->nweights; i++){
         self->weights[i] -= rate * self->u_weights[i];
-        self->u_weights[i] = 0;
-    }
+        self->u_weights[i] = 0;}
     if (self->lprev != NULL) 
         Layer_update(self->lprev, rate);
 }
@@ -327,7 +252,6 @@ Layer* Layer_create_full(Layer* lprev, int nnodes, double std){
     Layer* self = Layer_create(
         lprev, LAYER_FULL, nnodes, 1, 1,
         nnodes, nnodes * lprev->nnodes);
-
     for (int i = 0; i < self->nweights; i++) 
         self->weights[i] = std * nrnd();
     return self;
@@ -339,7 +263,6 @@ Layer* Layer_create_conv(
     Layer* self = Layer_create(
         lprev, LAYER_CONV, depth, width, height,
         depth, depth * lprev->depth * kernsize * kernsize);
-
     self->conv.kernsize = kernsize;
     self->conv.padding = padding;
     self->conv.stride = stride;
@@ -350,20 +273,17 @@ Layer* Layer_create_conv(
 }
 
 
-typedef struct _IdxFile
-{
+typedef struct _IdxFile{
     int ndims;
     uint32_t* dims;
     uint8_t* data;
 } IdxFile;
 
 IdxFile* IdxFile_read(FILE* fp){
-
     struct {
         uint16_t magic;
         uint8_t type;
         uint8_t ndims;
-
     } header;
     if (fread(&header, sizeof(header), 1, fp) != 1) return NULL;
     if (header.magic != 0) return NULL;
@@ -379,15 +299,18 @@ IdxFile* IdxFile_read(FILE* fp){
     if (fread(self->dims, sizeof(uint32_t), self->ndims, fp) == self->ndims) {
         uint32_t nbytes = sizeof(uint8_t);
         for (int i = 0; i < self->ndims; i++) {
+
             uint32_t size = be32toh(self->dims[i]);
             nbytes *= size;
             self->dims[i] = size;
         }
+
         self->data = (uint8_t*) malloc(nbytes);
     }
 
     return self;
 }
+
 
 void IdxFile_destroy(IdxFile* self){
     if (self->dims != NULL) {
@@ -398,13 +321,12 @@ void IdxFile_destroy(IdxFile* self){
         free(self->data);
         self->data = NULL;
     }
+    free(self);
 }
-
 
 uint8_t IdxFile_get1(IdxFile* self, int i){
     return self->data[i];
 }
-
 
 void IdxFile_get3(IdxFile* self, int i, uint8_t* out){
     size_t n = self->dims[1] * self->dims[2];
@@ -420,9 +342,11 @@ int main(int argc, char* argv[])
     /* argv[3] = test images */
     /* argv[4] = test labels */
     if (argc < 4) return 100;
-
-    /* Use a fixed random seed for debugging. */
-    srand(0);
+    MPI_Init(&argc, &argv);
+    int world_rank, world_size;
+    MPI_Comm_rank(MPI_COMM_WORLD, &world_rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &world_size);
+    srand(0 + world_rank);
     /* Initialize layers. */
     /* Input layer - 1x28x28. */
     Layer* linput = Layer_create_input(1, 28, 28);
@@ -454,39 +378,50 @@ int main(int argc, char* argv[])
     labels_train = IdxFile_read(fp);
     if (labels_train == NULL) return 111;
     fclose(fp);
+    
+    int train_size = images_train->dims[0];
+    int startidx = train_size/(world_size)*world_rank;
+    int endidx = train_size/(world_size)*(world_rank + 1);
 
     fprintf(stderr, "training...\n");
     double rate = 0.1;
     double etotal = 0;
     int nepoch = 10;
     int batch_size = 32;
-    int train_size = images_train->dims[0];
-    for (int i = 0; i < nepoch * train_size; i++) {
+
+    for (int epoch = 0; epoch < nepoch; epoch++) {
+    if (world_rank == 0) fprintf(stderr, "epoch = %d\n", epoch);
+        for (int idx = startidx; idx < endidx; idx++){
+        if (world_rank == 0 && !(idx % 1000)) fprintf(stderr, "    idx = %d, error = %f\n", idx, etotal/1000);
         uint8_t img[28*28];
         double x[28*28];
         double y[10];
-        int index = rand() % train_size;
-        IdxFile_get3(images_train, index, img);
+        IdxFile_get3(images_train, idx, img);
         for (int j = 0; j < 28*28; j++) x[j] = img[j]/255.0;
         
         Layer_setInputs(linput, x);
         Layer_getOutputs(loutput, y);
-        int label = IdxFile_get1(labels_train, index);
+        int label = IdxFile_get1(labels_train, idx);
         for (int j = 0; j < 10; j++) {
             y[j] = (j == label)? 1 : 0;
         }
         Layer_learnOutputs(loutput, y);
         etotal += Layer_getErrorTotal(loutput);
-        if ((i % batch_size) == 0) {
-            // Minibatch: update the network for every n samples.
-            Layer_update(loutput, rate/batch_size);
-        }
-        if ((i % 1000) == 0) {
-            fprintf(stderr, "i=%d, error=%.4f\n", i, etotal/1000);
-            etotal = 0;
-        }
-    }
+        
 
+        Layer *current = linput;
+        while (current != NULL) {
+            MPI_Allreduce(MPI_IN_PLACE, current->gradients, current->nnodes, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+            for (int i = 0; i < current->nweights; i++) 
+                current->weights[i] -= rate * current->weights[i] / world_size;
+            for (int i = 0; i < current->nbiases; i++) 
+                current->biases[i] -= rate * current->u_biases[i] / world_size;
+            current = current->lnext;
+        }
+        Layer_update(loutput, rate);
+        }
+        etotal = 0;
+    }
     IdxFile_destroy(images_train);
     IdxFile_destroy(labels_train);
 
@@ -505,6 +440,7 @@ int main(int argc, char* argv[])
     if (labels_test == NULL) return 111;
     fclose(fp);
 
+    if (world_rank == 0) {
     fprintf(stderr, "testing...\n");
     int ntests = images_test->dims[0];
     int ncorrect = 0;
@@ -522,16 +458,16 @@ int main(int argc, char* argv[])
         //Pick the most probable label.
         int mj = -1;
         for (int j = 0; j < 10; j++) {
-            if (mj < 0 || y[mj] < y[j]) {
+            if (mj < 0 || y[mj] < y[j])
                 mj = j;
-            }
         }
-        if (mj == label) 
+        if (mj == label)
             ncorrect++;
-        if ((i % 1000) == 0) fprintf(stderr, "i=%d\n", i);
+        if ((i % 1000) == 0)
+            fprintf(stderr, "i=%d\n", i);
     }
     fprintf(stderr, "ntests=%d, ncorrect=%d\n", ntests, ncorrect);
-
+    }
     IdxFile_destroy(images_test);
     IdxFile_destroy(labels_test);
 
@@ -541,6 +477,6 @@ int main(int argc, char* argv[])
     Layer_destroy(lfull1);
     Layer_destroy(lfull2);
     Layer_destroy(loutput);
-
+    MPI_Finalize();
     return 0;
 }
